@@ -9,7 +9,10 @@
 
 #define RELAY 21
 
-int state = 0; // สถานะเริ่มต้นของประตู (0 = ล็อก, 1 = ปลดล็อก)
+int state = 0; // Start with door locked
+bool doorUnlocking = false;
+unsigned long unlockStartTime = 0; // Track when the door was unlocked
+const unsigned long unlockDuration = 10000; // Unlock duration in milliseconds
 
 Config config;
 AsyncWebServer server(80);
@@ -21,9 +24,8 @@ void notFound(AsyncWebServerRequest *request) {
 void setup() {
     WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Disable Brownout detector
     Serial.begin(115200);
-    // pinMode(REED, INPUT_PULLUP);
     pinMode(RELAY, OUTPUT);
-    digitalWrite(RELAY, LOW); // เริ่มต้นล็อกประตู
+    digitalWrite(RELAY, LOW); // Start with door locked
 
     // Initialize SPIFFS
     if (!SPIFFS.begin(true)) {  // Mount SPIFFS, formatting if failed
@@ -31,11 +33,11 @@ void setup() {
         return;
     }
 
-    // อ่านค่าคอนฟิกจากไฟล์ config.json
+    // Read config.json
     const char *filename = "/config.json"; 
     readConfigFromSPIFFS(filename, config);
 
-    // ตั้งค่า WiFi
+    // Setting WiFi
     if (!WiFi.config(config.local_IP, config.gateway, config.subnet)) {
         Serial.println("STA Failed to configure");
     }
@@ -48,33 +50,22 @@ void setup() {
     Serial.println("Connected to WiFi");
     Serial.println(WiFi.localIP());
 
-    // Endpoint สำหรับตรวจสอบสถานะ state
+    // Endpoint for checking the state of the door
     server.on("/get-state", HTTP_GET, [](AsyncWebServerRequest *request) {
         String message = "Current state: " + String(state);
         request->send(200, "text/plain", message);
     });
 
-    // Endpoint สำหรับตั้งค่าการล็อกหรือปลดล็อก
+    // Endpoint for unlocking the door
     server.on("/set-state", HTTP_GET, [](AsyncWebServerRequest *request) {
-        if (request->hasParam("state")) {
-            String stateParam = request->getParam("state")->value();
-            int newState = stateParam.toInt();
-
-            if (newState == 1) { // ปลดล็อก
-                Serial.println("Unlocking door...");
-                digitalWrite(RELAY, HIGH); // ปลดล็อก
-                state = 1;
-                request->send(200, "text/plain", "Door unlocked");
-            } else if (newState == 0) { // ล็อก
-                Serial.println("Locking door...");
-                digitalWrite(RELAY, LOW); // ล็อก
-                state = 0;
-                request->send(200, "text/plain", "Door locked");
-            } else {
-                request->send(400, "text/plain", "Invalid state value (0 or 1 expected)");
-            }
+        if (!doorUnlocking) {
+            Serial.println("Unlocking door...");
+            doorUnlocking = true;
+            unlockStartTime = millis();
+            digitalWrite(RELAY, HIGH); // Unlock door
+            request->send(200, "text/plain", "Door unlocked");
         } else {
-            request->send(400, "text/plain", "Missing parameter 'state'");
+            request->send(200, "text/plain", "Door already unlocked");
         }
     });
 
@@ -83,5 +74,12 @@ void setup() {
 }
 
 void loop() {
-    // ไม่มีอะไรใน loop เพราะการควบคุมผ่าน HTTP Request
+    // Handle door unlock timer
+    if (doorUnlocking) {
+        if (millis() - unlockStartTime >= unlockDuration) {
+            Serial.println("Locking door...");
+            digitalWrite(RELAY, LOW); // Lock door
+            doorUnlocking = false;
+        }
+    }
 }
